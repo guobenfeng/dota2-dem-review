@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 运行时产物（分析报告与缓存，随比赛生成，不入库）
+scripts/reports/
+scripts/heroes.json.tmp
+*.log
+parser.log
+parser.pid
+
+# Maven 构建中间产物（保留 target/stats-0.1.0.jar，忽略其余）
+parser/target/*
+!parser/target/stats-0.1.0.jar
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/

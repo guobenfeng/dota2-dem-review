@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dota2 AI 复盘中心</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+:root{
+  --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#2d3748;
+  --text:#e6edf3; --muted:#8b949e;
+  --radiant:#3fb950; --dire:#f85149; --gold:#e3b341; --accent:#58a6ff;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:"Segoe UI","Microsoft YaHei",sans-serif;min-height:100vh}
+a{color:var(--accent);text-decoration:none}
+.container{max-width:1180px;margin:0 auto;padding:20px}
+header.top{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;background:var(--panel);border-bottom:1px solid var(--border)}
+header.top h1{font-size:20px;letter-spacing:1px}
+header.top h1 .logo{color:var(--dire)}
+header.top .sub{color:var(--muted);font-size:12px;margin-top:2px}
+button{background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px;transition:.15s}
+button:hover{border-color:var(--accent);color:var(--accent)}
+button:disabled{opacity:.5;cursor:wait}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:16px}
+.card h2{font-size:15px;margin-bottom:12px;color:var(--gold);letter-spacing:.5px}
+.match-card{display:flex;align-items:center;gap:18px;cursor:pointer;transition:.15s}
+.match-card:hover{border-color:var(--accent);transform:translateY(-1px)}
+.match-card .mid{font-size:17px;font-weight:600}
+.match-card .meta{color:var(--muted);font-size:12px;margin-top:4px}
+.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}
+.badge.radiant{background:rgba(63,185,80,.15);color:var(--radiant)}
+.badge.dire{background:rgba(248,81,73,.15);color:var(--dire)}
+.heroes{display:flex;flex-direction:column;gap:4px;font-size:12px;flex:1}
+.heroes .r{color:var(--radiant)} .heroes .d{color:var(--dire)}
+.score{font-size:22px;font-weight:700;color:var(--gold);min-width:70px;text-align:center}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:500;font-size:12px}
+tr.radiant td:first-child{border-left:3px solid var(--radiant)}
+tr.dire td:first-child{border-left:3px solid var(--dire)}
+.grade{display:inline-block;width:26px;height:26px;line-height:26px;text-align:center;border-radius:6px;font-weight:700;font-size:14px}
+.grade.S{background:#e3b341;color:#000}.grade.A{background:#3fb950;color:#000}
+.grade.B{background:#58a6ff;color:#000}.grade.C{background:#8b949e;color:#000}.grade.D{background:#f85149;color:#fff}
+.chart{width:100%;height:320px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center}
+.kpi .v{font-size:20px;font-weight:700;color:var(--gold)}
+.kpi .k{font-size:12px;color:var(--muted);margin-top:4px}
+.note{background:var(--panel2);border-left:3px solid var(--accent);padding:10px 14px;border-radius:0 8px 8px 0;margin-bottom:8px;font-size:13px;line-height:1.7}
+.advice-hl{color:var(--radiant);font-size:12px;line-height:1.6}
+.advice-ad{color:#d29922;font-size:12px;line-height:1.6}
+.tf-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px}
+.tf-time{color:var(--gold);font-weight:600;min-width:52px}
+.tf-bar{height:10px;border-radius:5px;display:flex;overflow:hidden;flex:1;max-width:220px}
+.back{margin-bottom:14px;display:inline-block;font-size:13px}
+.empty{text-align:center;color:var(--muted);padding:60px 0}
+.loading{text-align:center;color:var(--muted);padding:40px}
+.mvp-tag{background:rgba(227,179,65,.15);color:var(--gold);padding:1px 8px;border-radius:10px;font-size:11px;margin-left:6px}
+</style>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1><span class="logo">⚔</span> Dota2 AI 复盘中心</h1>
+    <div class="sub">.dem 录像 → odota/parser → 结构化分析 → AI 教练</div>
+  </div>
+  <div>
+    <button id="rescanBtn" onclick="rescan()">🔄 扫描新录像</button>
+  </div>
+</header>
+<div class="container" id="app"><div class="loading">加载中…</div></div>
+
+<script>
+const $app = document.getElementById('app');
+const fmtMin = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+let charts = [];
+
+function destroyCharts(){ charts.forEach(c=>c.dispose()); charts=[]; }
+
+async function api(p){ const r = await fetch(p); return r.json(); }
+
+/* ---------------- 列表页 ---------------- */
+async function renderList(){
+  destroyCharts();
+  const idx = await api('/api/matches');
+  if(!idx.matches || !idx.matches.length){
+    $app.innerHTML = '<div class="empty">暂无比赛。把 .dem 文件放入监控目录后点击「扫描新录像」。</div>';
+    return;
+  }
+  let h = `<div class="kpis">
+    <div class="kpi"><div class="v">${idx.count}</div><div class="k">已分析比赛</div></div>
+    <div class="kpi"><div class="v">${idx.matches.filter(m=>m.winner==='天辉').length} / ${idx.matches.filter(m=>m.winner==='夜魇').length}</div><div class="k">天辉胜 / 夜魇胜</div></div>
+    <div class="kpi"><div class="v">${Math.round(idx.matches.reduce((a,m)=>a+(m.duration_min||0),0)/idx.count)} 分</div><div class="k">平均时长</div></div>
+    <div class="kpi"><div class="v">${idx.generated_at ? idx.generated_at.slice(5,16) : '—'}</div><div class="k">索引更新时间</div></div>
+  </div>`;
+  for(const m of idx.matches){
+    h += `<div class="card match-card" onclick="location.hash='#/match/${m.match_id}'">
+      <div>
+        <div class="mid">Match ${m.match_id}</div>
+        <div class="meta">${m.duration_min} 分钟 · ${m.teamfights} 场团战 · MVP: ${m.mvp||'—'}</div>
+        <div style="margin-top:6px"><span class="badge ${m.winner==='天辉'?'radiant':'dire'}">${m.winner} 获胜</span>
+        ${m.has_coach?'<span class="mvp-tag">AI教练✓</span>':''}</div>
+      </div>
+      <div class="score">${m.score}</div>
+      <div class="heroes">
+        <div class="r">🟢 ${(m.radiant_heroes||[]).join(' · ')}</div>
+        <div class="d">🔴 ${(m.dire_heroes||[]).join(' · ')}</div>
+      </div>
+    </div>`;
+  }
+  $app.innerHTML = h;
+}
+
+/* ---------------- 详情页 ---------------- */
+async function renderMatch(mid){
+  destroyCharts();
+  $app.innerHTML = '<div class="loading">加载比赛数据…</div>';
+  const d = await api('/api/match/'+mid);
+  if(d.error){ $app.innerHTML = `<div class="empty">${d.error}</div>`; return; }
+  const coach = d.coach;
+  const gradeOf = {}; if(coach) coach.players.forEach(p=>gradeOf[p.slot]=p);
+
+  let h = `<a class="back" href="#/">← 返回比赛列表</a>`;
+  h += `<div class="kpis">
+    <div class="kpi"><div class="v"><span class="badge ${d.winner==='天辉'?'radiant':'dire'}">${d.winner} 获胜</span></div><div class="k">Match ${d.match_id}</div></div>
+    <div class="kpi"><div class="v">${d.duration_min} 分</div><div class="k">比赛时长</div></div>
+    <div class="kpi"><div class="v">${fmtMin(d.first_blood||0)}</div><div class="k">一血时间</div></div>
+    <div class="kpi"><div class="v">${d.teamfights_count}</div><div class="k">团战数</div></div>
+    <div class="kpi"><div class="v">${(d.economy&&d.economy.max_radiant_lead||0).toLocaleString()}</div><div class="k">天辉最大领先(金)</div></div>
+    <div class="kpi"><div class="v">${d.wards?d.wards.total_obs+'+'+d.wards.total_sen:'—'}</div><div class="k">侦查+岗哨眼</div></div>
+  </div>`;
+
+  h += `<div class="card"><h2>📈 经济 / 经验优势曲线（天辉视角）</h2><div id="advChart" class="chart"></div></div>`;
+  h += `<div class="card"><h2>💰 玩家每分钟经济曲线</h2><div id="goldChart" class="chart"></div></div>`;
+
+  // 玩家表
+  h += `<div class="card"><h2>👥 玩家数据 & AI 评级</h2><table><tr>
+    <th>评级</th><th>玩家</th><th>英雄</th><th>阵营</th><th>K/D</th><th>GPM</th><th>XPM</th><th>正补</th><th>伤害</th><th>眼位</th><th>团战率</th></tr>`;
+  for(const p of d.players){
+    const g = gradeOf[p.slot];
+    h += `<tr class="${p.team==='天辉'?'radiant':'dire'}">
+      <td>${g?`<span class="grade ${g.grade}">${g.grade}</span>`:'—'}</td>
+      <td>${p.player||'—'}</td>
+      <td><b>${p.hero}</b>${coach&&coach.mvp.hero===p.hero?'<span class="mvp-tag">MVP</span>':''}</td>
+      <td>${p.team}</td><td>${p.kills}/${p.deaths}</td><td>${p.gpm}</td><td>${p.xpm}</td>
+      <td>${p.lh}</td><td>${p.damage.toLocaleString()}</td><td>${p.obs}+${p.sen}</td>
+      <td>${Math.round((p.tf_participation||0)*100)}%</td></tr>`;
+  }
+  h += `</table></div>`;
+
+  // AI 教练
+  if(coach){
+    h += `<div class="grid2"><div class="card"><h2>🧠 AI 教练 · 全队战术分析</h2>`;
+    for(const n of coach.team_notes) h += `<div class="note">${n}</div>`;
+    h += `</div><div class="card"><h2>🎯 AI 教练 · 个人改进建议</h2><table><tr><th>玩家 / 英雄</th><th>亮点 / 建议</th></tr>`;
+    for(const p of [...coach.players].sort((a,b)=>b.score-a.score)){
+      h += `<tr class="${p.team==='天辉'?'radiant':'dire'}"><td style="white-space:nowrap"><span class="grade ${p.grade}">${p.grade}</span> <b>${p.hero}</b><br><span style="color:var(--muted);font-size:11px">${p.player?p.player+' · ':''}${p.score} 分</span></td>
+      <td>${p.highlights.map(x=>`<div class="advice-hl">✦ ${x}</div>`).join('')}${p.advices.map(x=>`<div class="advice-ad">▲ ${x}</div>`).join('')}</td></tr>`;
+    }
+    h += `</table></div></div>`;
+    if(coach.llm_recap){
+      h += `<div class="card"><h2>📝 LLM 深度复盘</h2><div style="line-height:1.9;font-size:14px;white-space:pre-wrap">${coach.llm_recap}</div></div>`;
+    }
+  }
+
+  // 团战
+  if(d.teamfights && d.teamfights.length){
+    h += `<div class="card"><h2>⚔️ 团战时间线</h2>`;
+    for(const f of d.teamfights){
+      const total = f.radiant_deaths + f.dire_deaths;
+      const rp = total? (f.radiant_deaths/total*100):50;
+      h += `<div class="tf-row"><span class="tf-time">${fmtMin(f.start)}</span>
+        <span>阵亡 ${total}（<span style="color:var(--radiant)">天辉 ${f.radiant_deaths}</span> / <span style="color:var(--dire)">夜魇 ${f.dire_deaths}</span>）</span>
+        <div class="tf-bar"><div style="width:${rp}%;background:var(--radiant)"></div><div style="width:${100-rp}%;background:var(--dire)"></div></div>
+        <span style="color:var(--muted)">最高伤害 ${f.top_damage[0]}（${f.top_damage[1].toLocaleString()}）</span></div>`;
+    }
+    h += `</div>`;
+  }
+  $app.innerHTML = h;
+
+  /* 图表 */
+  if(window.echarts){
+    const mins = (d.gold_adv||[]).map((_,i)=>i);
+    const dark = {backgroundColor:'transparent', textStyle:{color:'#8b949e'}};
+    if(d.gold_adv && d.gold_adv.length){
+      const c1 = echarts.init(document.getElementById('advChart'),null,{renderer:'canvas'});
+      c1.setOption({...dark, tooltip:{trigger:'axis'}, legend:{data:['经济优势','经验优势'],textStyle:{color:'#8b949e'}},
+        grid:{left:60,right:20,top:36,bottom:30},
+        xAxis:{type:'category',data:mins,name:'分钟',axisLine:{lineStyle:{color:'#2d3748'}}},
+        yAxis:{type:'value',splitLine:{lineStyle:{color:'#21262d'}},axisLabel:{formatter:v=>(v/1000)+'k'}},
+        series:[
+          {name:'经济优势',type:'line',data:d.gold_adv,smooth:true,lineStyle:{color:'#e3b341',width:2},
+           areaStyle:{color:'rgba(227,179,65,.12)'},symbol:'none'},
+          {name:'经验优势',type:'line',data:d.xp_adv,smooth:true,lineStyle:{color:'#58a6ff',width:2},symbol:'none'},
+        ]});
+      charts.push(c1);
+    }
+    if(d.gold_t && d.gold_t.length){
+      const c2 = echarts.init(document.getElementById('goldChart'),null,{renderer:'canvas'});
+      const rc=['#3fb950','#2ea043','#56d364','#7ee787','#aff5b4'], dc=['#f85149','#da3633','#ff7b72','#ffa198','#ffc1bc'];
+      c2.setOption({...dark, tooltip:{trigger:'axis'}, legend:{type:'scroll',textStyle:{color:'#8b949e'}},
+        grid:{left:60,right:20,top:36,bottom:30},
+        xAxis:{type:'category',data:(d.gold_t[0]||[]).map((_,i)=>i),name:'分钟',axisLine:{lineStyle:{color:'#2d3748'}}},
+        yAxis:{type:'value',splitLine:{lineStyle:{color:'#21262d'}},axisLabel:{formatter:v=>(v/1000)+'k'}},
+        series:d.players.map((p,i)=>({name:p.hero,type:'line',data:d.gold_t[i],smooth:true,symbol:'none',
+          lineStyle:{color:i<5?rc[i]:dc[i-5],width:i===0?2:1.5}}))});
+      charts.push(c2);
+    }
+    window.onresize = ()=>charts.forEach(c=>c.resize());
+  }
+}
+
+/* ---------------- 扫描 ---------------- */
+async function rescan(){
+  const btn = document.getElementById('rescanBtn');
+  btn.disabled = true; btn.textContent = '⏳ 扫描中…';
+  await fetch('/api/rescan',{method:'POST'});
+  const timer = setInterval(async ()=>{
+    const st = await api('/api/rescan/status');
+    if(!st.running){
+      clearInterval(timer);
+      btn.disabled = false; btn.textContent = '🔄 扫描新录像';
+      if(!location.hash || location.hash==='#/') renderList();
+    }
+  }, 2000);
+}
+
+/* ---------------- 路由 ---------------- */
+function route(){
+  const h = location.hash;
+  const m = h.match(/^#\/match\/(\w+)/);
+  if(m) renderMatch(m[1]); else renderList();
+}
+window.addEventListener('hashchange', route);
+route();
+</script>
+</body>
+</html>

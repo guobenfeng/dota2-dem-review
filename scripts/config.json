@@ -1,0 +1,5 @@
+{
+  "watch_dirs": [
+    "/path/to/your/dota2/replays"
+  ]
+}
