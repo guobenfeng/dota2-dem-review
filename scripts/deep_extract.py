@@ -54,6 +54,23 @@ KEY_ITEMS = {
 }
 
 
+def _infer_winner(blob: dict):
+    """从 raw blob 推断胜者（当 summary.json 不可用时）。"""
+    # 扫描建筑击杀中的遗迹
+    for o in blob.get("objectives", []) or []:
+        if o.get("type") == "building_kill":
+            key = o.get("key") or ""
+            if "goodguys_fort" in key:
+                return "夜魇"  # 夜魇推掉天辉遗迹
+            elif "badguys_fort" in key:
+                return "天辉"
+    # 回退用最终经济差符号
+    adv = blob.get("radiant_gold_adv") or []
+    if adv:
+        return "天辉" if adv[-1] > 0 else "夜魇"
+    return None
+
+
 def fmt_min(sec):
     if sec is None:
         return "?"
@@ -152,7 +169,14 @@ def main():
     if not raw_p.exists():
         raise SystemExit(f"未找到 {raw_p}，请先运行 analyze.py")
     blob = json.loads(raw_p.read_text(encoding="utf-8"))
-    summary = json.loads(sum_p.read_text(encoding="utf-8")) if sum_p.exists() else {}
+    summary = {}
+    summary_missing = False
+    if sum_p.exists():
+        summary = json.loads(sum_p.read_text(encoding="utf-8"))
+    else:
+        summary_missing = True
+        print("[deep_extract] 警告：_summary.json 不存在（可能只跑了 --raw-only），"
+              "winner 与 duration 将从 raw blob 推断，部分分析可能不完整。")
 
     heroes = load_heroes()
     hero_tokens = [k for k in heroes if not k.isdigit()]
@@ -298,13 +322,31 @@ def main():
             buildings.append({"time": o.get("time"), "t": fmt_min(o.get("time")), "key": o.get("key")})
     buildings.sort(key=lambda x: x["time"] or 0)
 
+    # 肉山击杀时间线（从 objectives 中的 CHAT_MESSAGE_ROSHAN_KILL 事件）
+    roshan_kills = []
+    for o in blob.get("objectives", []) or []:
+        if o.get("type") == "CHAT_MESSAGE_ROSHAN_KILL":
+            roshan_kills.append({"time": o.get("time"), "t": fmt_min(o.get("time")),
+                                 "player": o.get("player1", -1)})
+    # 买活时间线（每位玩家，slot 统一用 0-9 与 deep.json 其余字段一致；
+    # 注：odota 的 player_slot 夜魇编码为 128-132，此处改用枚举索引避免不一致）
+    buyback_timeline = []
+    for i, p in enumerate(players):
+        bb_log = p.get("buyback_log") or []
+        for bb_time in bb_log:
+            _t = bb_time if isinstance(bb_time, (int, float)) else bb_time.get("time")
+            buyback_timeline.append({"time": _t, "t": fmt_min(_t), "slot": i})
+    buyback_timeline.sort(key=lambda x: x["time"] or 0)
+
     deep = {
         "match_id": args.match,
         "duration_min": duration_min,
-        "winner": summary.get("winner"),
+        "winner": summary.get("winner") or _infer_winner(blob),
         "radiant_gold_adv": blob.get("radiant_gold_adv"),
         "radiant_xp_adv": blob.get("radiant_xp_adv"),
         "buildings_timeline": buildings,
+        "roshan_timeline": roshan_kills,
+        "buyback_timeline": buyback_timeline,
         "teamfights": summary.get("teamfights"),
         "players": out_players,
     }

@@ -25,6 +25,46 @@ HERE = Path(__file__).resolve().parent
 REPORTS = HERE / "reports"
 RADIANT, DIRE = "天辉", "夜魇"
 
+# 关键装备时效基准（核心位常见出装路线的黄金窗口期，以秒计）
+ITEM_BENCHMARKS = {
+    "blink":           720,   # 跳刀 12 分钟
+    "battle_fury":     840,   # 狂战 14 分钟（含草鞋）
+    "bfury":           840,   # 狂战（别名）
+    "radiance":        1020,  # 辉耀 17 分钟
+    "black_king_bar":  1320,  # BKB 22 分钟
+    "hand_of_midas":   480,   # 点金 8 分钟
+    "desolator":       840,   # 黯灭 14 分钟
+    "maelstrom":       720,   # 电锤 12 分钟
+    "diffusal_blade":  720,   # 散失 12 分钟
+    "manta":           1200,  # 分身 20 分钟
+    "orchid":          960,   # 紫苑 16 分钟
+    "aghanims_shard":  900,   # A杖碎片 15 分钟（白嫖/购买）
+    "ultimate_scepter":1500,  # A杖 25 分钟
+    "butterfly":       1800,  # 蝴蝶 30 分钟
+    "satanic":         1980,  # 撒旦 33 分钟
+    "abyssal_blade":   2100,  # 大晕锤 35 分钟
+    "assault":         1920,  # 强袭 32 分钟
+}
+
+
+def check_item_timing(p, duration_min):
+    """对比关键装备购买时间与元游戏基准，生成建议。返回 (highlights, advices)。"""
+    hl, ad = [], []
+    key_items = p.get("key_items") or []
+    for ki in key_items:
+        item = ki.get("item") or ki.get("name") or ""
+        purchase_time = ki.get("time", 0)
+        if not item or item not in ITEM_BENCHMARKS:
+            continue
+        benchmark = ITEM_BENCHMARKS[item]
+        if purchase_time <= benchmark:
+            hl.append(f"{item} {fmt_min(purchase_time)} 准时（基准{fmt_min(benchmark)}）")
+        elif purchase_time > benchmark * 1.5:
+            ad.append(f"{item} {fmt_min(purchase_time)} 过晚（基准{fmt_min(benchmark)}）——节奏严重落后，需检视打钱路线和团战收益")
+        elif purchase_time > benchmark:
+            ad.append(f"{item} {fmt_min(purchase_time)} 稍晚（基准{fmt_min(benchmark)}）——可优化前期发育节奏")
+    return hl, ad
+
 
 def fmt_min(sec):
     return f"{int(sec)//60}:{int(sec)%60:02d}"
@@ -98,6 +138,11 @@ def grade_player(p, duration_min, team_won):
         highlights.append(f"拆塔 {p['towers']} 座，推进转化出色")
         score += 5
 
+    # 物品时效基准（对标元游戏黄金窗口）
+    ih, ia = check_item_timing(p, duration_min)
+    highlights += ih; advices += ia
+    score += len(ih) * 3 - len(ia) * 4
+
     if team_won:
         score += 5
 
@@ -154,6 +199,25 @@ def team_analysis(s):
 def rule_coach(s):
     duration = s.get("duration_min", 0)
     winner = s.get("winner")
+    players = s.get("players", [])
+
+    # 超短局（<5 分钟：放弃/秒退）：跳过评分，避免失真
+    if duration < 5:
+        return {
+            "match_id": s.get("match_id"),
+            "engine": "rule",
+            "winner": winner,
+            "duration_min": duration,
+            "team_notes": ["比赛过早结束（<5 分钟），无法做有意义的评分与分析。"],
+            "players": [{
+                "slot": p["slot"], "team": p["team"], "hero": p["hero"],
+                "player": p.get("player", ""), "grade": "—", "score": 0,
+                "highlights": [], "advices": ["比赛过早结束"],
+                "kda": f"{p['kills']}/{p['deaths']}", "gpm": p["gpm"], "xpm": p["xpm"],
+            } for p in players],
+            "mvp": None, "needs_improvement": None,
+        }
+
     result = {
         "match_id": s.get("match_id"),
         "engine": "rule",
@@ -162,7 +226,7 @@ def rule_coach(s):
         "team_notes": team_analysis(s),
         "players": [],
     }
-    for p in s.get("players", []):
+    for p in players:
         grade, score, highlights, advices = grade_player(p, duration, p["team"] == winner)
         result["players"].append({
             "slot": p["slot"], "team": p["team"], "hero": p["hero"], "player": p.get("player", ""),
@@ -170,11 +234,15 @@ def rule_coach(s):
             "highlights": highlights, "advices": advices,
             "kda": f"{p['kills']}/{p['deaths']}", "gpm": p["gpm"], "xpm": p["xpm"],
         })
-    # MVP / 背锅
-    best = max(result["players"], key=lambda x: x["score"])
-    worst = min(result["players"], key=lambda x: x["score"])
-    result["mvp"] = {"hero": best["hero"], "team": best["team"], "score": best["score"]}
-    result["needs_improvement"] = {"hero": worst["hero"], "team": worst["team"], "score": worst["score"]}
+    # 按队伍分别评选 MVP 和最需改进（而非全局最高/最低分）
+    r_players = [x for x in result["players"] if x["team"] == RADIANT]
+    d_players = [x for x in result["players"] if x["team"] == DIRE]
+    r_mvp = max(r_players, key=lambda x: x["score"]) if r_players else None
+    d_mvp = max(d_players, key=lambda x: x["score"]) if d_players else None
+    r_worst = min(r_players, key=lambda x: x["score"]) if r_players else None
+    d_worst = min(d_players, key=lambda x: x["score"]) if d_players else None
+    result["mvp"] = {"radiant": r_mvp, "dire": d_mvp}
+    result["needs_improvement"] = {"radiant": r_worst, "dire": d_worst}
     return result
 
 
@@ -216,9 +284,19 @@ def llm_coach(summary, rule_result):
 
 def render_md(r, llm_text):
     L = [f"# AI 教练报告 — Match {r['match_id']}", ""]
-    L.append(f"> **{r['winner']} 获胜** · 时长 {r['duration_min']} 分钟 · "
-             f"MVP：{r['mvp']['hero']}（{r['mvp']['score']} 分） · "
-             f"最需改进：{r['needs_improvement']['hero']}（{r['needs_improvement']['score']} 分）")
+    mvp = r.get("mvp")
+    ni = r.get("needs_improvement")
+    if mvp and ni:
+        # 新格式（按队伍 MVP）
+        r_mvp = mvp.get("radiant")
+        d_mvp = mvp.get("dire")
+        mvp_line = []
+        if r_mvp: mvp_line.append(f"天辉 MVP：{r_mvp['hero']}({r_mvp['score']}分)")
+        if d_mvp: mvp_line.append(f"夜魇 MVP：{d_mvp['hero']}({d_mvp['score']}分)")
+        L.append(f"> **{r['winner']} 获胜** · 时长 {r['duration_min']} 分钟 · "
+                 f"{' · '.join(mvp_line)}")
+    else:
+        L.append(f"> **{r.get('winner','?')}** · 时长 {r['duration_min']} 分钟")
     L.append("")
     L.append("## 全队战术分析\n")
     for n in r["team_notes"]:
@@ -248,6 +326,24 @@ def main():
         print(f"[coach] 找不到 {summary_file}，请先运行 analyze.py")
         return 1
     s = json.loads(summary_file.read_text(encoding="utf-8"))
+
+    # 装备时效基准对比需要 deep.json 里的 key_items（含购买时间）。
+    # coach 默认只读 summary.json，后者不含该字段——这里把 deep 的关键装备
+    # 按 slot 合并进 summary 的玩家数据，让 check_item_timing 真正生效。
+    deep_file = REPORTS / f"{args.match}_deep.json"
+    if deep_file.exists():
+        try:
+            d = json.loads(deep_file.read_text(encoding="utf-8"))
+            slot_items = {}
+            for dp in d.get("players", []):
+                slot_items[dp.get("slot")] = dp.get("key_items") or []
+            for p in s.get("players", []):
+                if p.get("slot") in slot_items:
+                    p["key_items"] = slot_items[p["slot"]]
+        except Exception as e:
+            print(f"[coach] 合并 deep.json 装备时间失败（跳过基准对比）：{e}")
+    else:
+        print(f"[coach] 未找到 {deep_file}，装备时效基准对比将不生效（请先运行 deep_extract.py）")
 
     r = rule_coach(s)
     llm_text = llm_coach(s, r)

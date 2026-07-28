@@ -6,8 +6,7 @@
 
 跨平台设计：
 - Java 运行时自动探测：环境变量 JAVA_HOME / JDK_HOME > 系统 PATH 中的 java
-- parser 目录默认指向本技能包内的 ../parser（自带 odota-parser 源码与 jar）
-  （可用环境变量 DOTA2_PARSER_DIR 覆盖）
+- parser 目录默认指向 ../odota-parser（或环境变量 DOTA2_PARSER_DIR 覆盖）
 - 进程独立化：Windows 用 creationflags，Linux/macOS 用 start_new_session
 只需目标机器装有 JRE 21+（无需 JDK / Maven）。
 """
@@ -19,8 +18,16 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# parser 目录：scripts/ 的兄弟目录 parser/（导出包自带 odota-parser 源码与 jar）
-PARSER = os.environ.get("DOTA2_PARSER_DIR") or os.path.join(os.path.dirname(HERE), "parser")
+# parser 目录：优先 env 变量，其次 ../odota-parser，最后 ../parser
+PARSER = os.environ.get("DOTA2_PARSER_DIR")
+if not PARSER:
+    for cand in [os.path.join(os.path.dirname(HERE), "odota-parser"),
+                 os.path.join(os.path.dirname(HERE), "parser")]:
+        if os.path.exists(cand):
+            PARSER = cand
+            break
+if not PARSER:
+    PARSER = os.path.join(os.path.dirname(HERE), "odota-parser")
 PORT = 5600
 JAR = os.path.join(PARSER, "target", "stats-0.1.0.jar")
 LOGS = os.path.join(HERE, "parser.log")
@@ -28,21 +35,35 @@ LOGS = os.path.join(HERE, "parser.log")
 
 def find_java():
     """返回 java 可执行文件路径，找不到返回 None。"""
+    # 1) 环境变量 JAVA_HOME / JDK_HOME（路径存在才信任）
     for envvar in ("JAVA_HOME", "JDK_HOME"):
         v = os.environ.get(envvar)
         if v:
             p = os.path.join(v, "bin", "java")
             if os.path.exists(p):
                 return p
-            # Windows 上也可能无扩展名即可执行
-            return p
-    return shutil.which("java")
+            # env 指向的目录里没有 bin/java，不信任，继续探测
+    # 2) 系统 PATH
+    found = shutil.which("java")
+    if found:
+        return found
+    # 3) 本机 toolchain 兜底（目录不存在则跳过，不影响其他机器）
+    # 注意：必须精确匹配 java.exe / java，避免误中 java.dll 等导致 WinError 193
+    project_root = os.path.dirname(HERE)
+    for base in [os.path.join(project_root, "toolchain"),
+                 os.path.join(os.path.dirname(project_root), "toolchain")]:
+        if os.path.isdir(base):
+            for sub in sorted(os.listdir(base)):
+                for exe in ("java.exe", "java"):
+                    cand = os.path.join(base, sub, "bin", exe)
+                    if os.path.isfile(cand):
+                        return cand
+    return None
 
 
 def detached_kwargs(cwd, env, logf):
     kwargs = dict(cwd=cwd, env=env, stdout=logf, stderr=subprocess.STDOUT)
     if sys.platform.startswith("win"):
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         kwargs["creationflags"] = 0x00000008 | 0x00000200
     else:
         kwargs["start_new_session"] = True
@@ -52,7 +73,7 @@ def detached_kwargs(cwd, env, logf):
 def main():
     if not os.path.exists(JAR):
         print(f"错误：构建产物不存在 {JAR}\n"
-              f"请确认导出包内 parser/target/stats-0.1.0.jar 存在，"
+              f"请确认 odota-parser/target/stats-0.1.0.jar 存在，"
               f"或运行 build_parser.py 重新构建。")
         sys.exit(1)
     java = find_java()
@@ -61,7 +82,6 @@ def main():
         sys.exit(1)
 
     env = os.environ.copy()
-    # 把 java 所属的 home 透传给 JVM 子进程
     env["JAVA_HOME"] = os.path.dirname(os.path.dirname(java))
 
     logf = open(LOGS, "w", encoding="utf-8", buffering=1)

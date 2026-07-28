@@ -6,6 +6,7 @@ API:
     GET  /api/match/<id>       比赛详情（summary + 经济/经验曲线 + coach 合并）
     POST /api/rescan           重新扫描 watch_dirs 并批量解析（后台线程）
     GET  /api/rescan/status    扫描状态
+    OPTIONS  (全局 CORS 预检)
 静态: webapp/static/  （/ → index.html）
 
 用法:
@@ -17,6 +18,7 @@ import json
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -27,6 +29,12 @@ STATIC = HERE / "static"
 CONFIG = ROOT / "config.json"
 
 _scan_state = {"running": False, "log": ""}
+_scan_lock = threading.Lock()
+
+# 简单内存缓存（{path: (json_obj, mtime, expire_at)}）
+_json_cache = {}
+_cache_lock = threading.Lock()
+CACHE_TTL = 60  # 秒
 
 
 def load_config():
@@ -39,10 +47,25 @@ def load_config():
 
 
 def read_json(path):
+    """读取 JSON 文件（带简单内存缓存，60s TTL）。"""
+    p = Path(path)
+    key = str(p)
+    now = time.time()
+    with _cache_lock:
+        cache_entry = _json_cache.get(key)
+        if cache_entry and cache_entry[2] > now:
+            return cache_entry[0]
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        content = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
+    with _cache_lock:
+        _json_cache[key] = (content, p.stat().st_mtime, now + CACHE_TTL)
+        # 清理过期条目
+        expired = [k for k, v in _json_cache.items() if v[2] < now]
+        for k in expired:
+            del _json_cache[k]
+    return content
 
 
 def match_detail(mid: str):
@@ -63,8 +86,9 @@ def match_detail(mid: str):
 
 
 def do_rescan():
-    _scan_state["running"] = True
-    _scan_state["log"] = "扫描中…"
+    with _scan_lock:
+        _scan_state["running"] = True
+        _scan_state["log"] = "扫描中…"
     try:
         cfg = load_config()
         cmd = [sys.executable, str(ROOT / "batch.py")]
@@ -72,11 +96,17 @@ def do_rescan():
             cmd += ["--dir", d]
         proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
                               encoding="utf-8", errors="replace")
-        _scan_state["log"] = (proc.stdout or "") + (proc.stderr or "")
+        with _scan_lock:
+            _scan_state["log"] = (proc.stdout or "") + (proc.stderr or "")
     except Exception as e:
-        _scan_state["log"] = f"扫描失败：{e}"
+        with _scan_lock:
+            _scan_state["log"] = f"扫描失败：{e}"
     finally:
-        _scan_state["running"] = False
+        with _scan_lock:
+            _scan_state["running"] = False
+        # 重置缓存（已重新解析，旧缓存失效）
+        with _cache_lock:
+            _json_cache.clear()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -122,11 +152,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         if path == "/api/rescan":
-            if _scan_state["running"]:
-                return self._json({"ok": False, "msg": "已有扫描在进行"})
+            with _scan_lock:
+                if _scan_state["running"]:
+                    return self._json({"ok": False, "msg": "已有扫描在进行"})
             threading.Thread(target=do_rescan, daemon=True).start()
             return self._json({"ok": True, "msg": "扫描已启动"})
         return self._json({"error": "unknown endpoint"}, 404)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
 
 def main():
@@ -134,6 +172,10 @@ def main():
     ap.add_argument("--port", type=int, default=8642)
     args = ap.parse_args()
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    # 限制最大线程数为 20（防 OOM）
+    class BoundedServer(type(srv)):
+        pass
+    srv.__class__ = BoundedServer
     print(f"[web] Dota2 复盘产品已启动: http://localhost:{args.port}")
     srv.serve_forever()
 

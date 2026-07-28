@@ -2,7 +2,7 @@
 """batch.py — 批量分析目录下的所有 .dem 录像（数据采集层 + 解析层调度）。
 
 用法:
-    python batch.py --dir "/path/to/your/replays" [--dir 其他目录 ...] [--force] [--no-coach]
+    python batch.py --dir ./replays [--dir 其他目录 ...] [--force] [--no-coach]
 
 流程:
     1. 扫描目录下所有 *.dem
@@ -89,9 +89,18 @@ def main():
         for dem in dems:
             mid = match_id_of(dem)
             summary = REPORTS / f"{mid}_summary.json"
+            raw = REPORTS / f"{mid}.raw.json"
             if summary.exists() and not args.force:
-                print(f"[batch] 跳过（已解析）: {dem.name}")
-                skip += 1
+                # 检查是否需要重新解析：dem 文件比 summary 更新
+                if dem.stat().st_mtime > summary.stat().st_mtime:
+                    print(f"[batch] dem 已更新，重新解析: {dem.name}")
+                else:
+                    print(f"[batch] 跳过（已解析）: {dem.name}")
+                    skip += 1
+                    continue
+            elif raw.exists() and not summary.exists() and not args.force:
+                # 部分完成：有 raw.json 无 summary.json（上次解析中断）
+                print(f"[batch] 检测到部分解析（无 summary），重新解析: {dem.name}")
             else:
                 print(f"[batch] 解析: {dem.name} …")
                 t0 = time.time()

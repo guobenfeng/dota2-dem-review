@@ -57,8 +57,13 @@ def snappy_decompress(data: bytes) -> bytes:
                 off = int.from_bytes(data[pos:pos + 4], "little")
                 pos += 4
             start = len(out) - off
-            for i in range(ln):  # 允许重叠拷贝
-                out.append(out[start + i])
+            # 切片拷贝（比逐字节 append 快数个量级）
+            if start + ln <= len(out):
+                out.extend(out[start:start + ln])
+            else:
+                # 重叠拷贝（数据跨新旧边界）：逐字节复制，回退逐 byte
+                for i in range(ln):
+                    out.append(out[start + i])
     return bytes(out[:result_len])
 
 
