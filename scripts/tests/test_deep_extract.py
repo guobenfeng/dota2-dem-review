@@ -38,9 +38,12 @@ class TestTeamfightWinner(unittest.TestCase):
     def test_dire_fewer_deaths(self):
         self.assertEqual(deep_extract._teamfight_winner(5, 1, 100), "dire")
 
-    def test_tie_uses_gold(self):
-        self.assertEqual(deep_extract._teamfight_winner(3, 3, 500), "radiant")
-        self.assertEqual(deep_extract._teamfight_winner(3, 3, -500), "dire")
+    def test_tie_returns_tie(self):
+        # 平局（双方阵亡相同）必须记为 tie，不再按净经济差强行判胜
+        # （与 coach.py 的 4/4/3 口径一致）
+        self.assertEqual(deep_extract._teamfight_winner(3, 3, 500), "tie")
+        self.assertEqual(deep_extract._teamfight_winner(3, 3, -500), "tie")
+        self.assertEqual(deep_extract._teamfight_winner(3, 3, 0), "tie")
 
 
 def _make_blob():

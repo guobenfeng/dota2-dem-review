@@ -83,12 +83,12 @@ def _infer_winner(blob: dict):
 
 
 def _teamfight_winner(r_deaths, d_deaths, net_gold):
-    """死亡少的一方获胜；死亡相同则看净经济差。"""
+    """死亡少的一方获胜；死亡相同记为平局（不构成胜负，与 coach.py 口径一致）。"""
     if r_deaths < d_deaths:
         return RADIANT
     if d_deaths < r_deaths:
         return DIRE
-    return RADIANT if net_gold >= 0 else DIRE
+    return "tie"
 
 
 def enrich_teamfights(blob, slot_display, npc_to_slot):
@@ -277,6 +277,8 @@ def main():
         summary_missing = True
         print("[deep_extract] 警告：_summary.json 不存在（可能只跑了 --raw-only），"
               "winner 与 duration 将从 raw blob 推断，部分分析可能不完整。")
+    # summary 玩家按 slot 索引，用于合并权威 K/D/GPM/XPM/LH/DN/伤害等聚合字段
+    summary_players = {p.get("slot"): p for p in (summary.get("players") or [])}
 
     heroes = load_heroes()
     hero_tokens = [k for k in heroes if not k.isdigit()]
@@ -376,6 +378,7 @@ def main():
 
         _en = heroes.get(tok or "", tok)
         _cn = heroes_cn.get(tok or "")
+        sp = summary_players.get(i) or {}
         out_players.append({
             "slot": i,
             "team": team_of_slot(i),
@@ -387,6 +390,15 @@ def main():
             "position": positions.get(i),
             "lane": lane,
             "lane_votes": lane_votes,
+            # 聚合战斗字段（来自 summary.json 权威统计，避免 deep.json 缺字段）
+            "kills": sp.get("kills"),
+            "deaths": sp.get("deaths"),
+            "kda": sp.get("kda"),
+            "gpm": sp.get("gpm"),
+            "xpm": sp.get("xpm"),
+            "lh": sp.get("lh"),
+            "dn": sp.get("dn"),
+            "damage": sp.get("damage"),
             "gold_at_10": gold_t[min(10, len(gold_t) - 1)],
             "lh_at_10": lh_t[min(10, len(lh_t) - 1)],
             "final_gold": gold_t[-1],
