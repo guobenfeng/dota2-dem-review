@@ -82,6 +82,129 @@ def _infer_winner(blob: dict):
     return None
 
 
+def _teamfight_winner(r_deaths, d_deaths, net_gold):
+    """死亡少的一方获胜；死亡相同则看净经济差。"""
+    if r_deaths < d_deaths:
+        return RADIANT
+    if d_deaths < r_deaths:
+        return DIRE
+    return RADIANT if net_gold >= 0 else DIRE
+
+
+def enrich_teamfights(blob, slot_display, npc_to_slot):
+    """从 raw blob 的 teamfights（含 per-player 细节）重建团战深度分析。
+
+    返回 enriched 列表，每个元素含：
+    - 时间 / 阵营死亡 / 胜方 / 净经济·经验差
+    - quality_score（一边倒度 0-100，基于击杀差 + 净经济）
+    - kill_chain（击杀链：谁杀谁）
+    - participants（每人伤害/治疗/经济差/击杀/死亡/买活/活跃度）
+    - suspected_initiator（全场最活跃开团候选，低置信启发式）
+    - death_positions（各阵营死亡位置质心，来自 deaths_pos）
+    """
+    raw_tfs = blob.get("teamfights") or []
+    if not raw_tfs:
+        return []
+    out = []
+    for tf in raw_tfs:
+        pls = tf.get("players") or []
+        participants = {}
+        if len(pls) >= 10:
+            for i, pl in enumerate(pls):
+                killed = pl.get("killed") or {}
+                participants[i] = {
+                    "slot": i,
+                    "hero": slot_display.get(i, f"slot{i}"),
+                    "damage": pl.get("damage") or 0,
+                    "healing": pl.get("healing") or 0,
+                    "gold_delta": pl.get("gold_delta") or 0,
+                    "xp_delta": pl.get("xp_delta") or 0,
+                    "kills": sum(killed.values()),
+                    "deaths": pl.get("deaths") or 0,
+                    "buybacks": pl.get("buybacks") or 0,
+                    "ability_uses": sum((pl.get("ability_uses") or {}).values()),
+                    "item_uses": sum((pl.get("item_uses") or {}).values()),
+                }
+        # 击杀链
+        kill_chain = []
+        for i, pl in enumerate(pls):
+            for victim_npc, cnt in (pl.get("killed") or {}).items():
+                vslot = npc_to_slot.get(victim_npc)
+                kill_chain.append({
+                    "killer_slot": i,
+                    "killer": slot_display.get(i, f"slot{i}"),
+                    "victim_slot": vslot,
+                    "victim": slot_display.get(vslot, (victim_npc or "").replace("npc_dota_hero_", "")),
+                    "count": cnt,
+                })
+        kill_chain.sort(key=lambda e: -(e["count"] or 0))
+        # 死亡位置（deaths_pos: {x_str:{y_str:count}}，0-255 小地图坐标）
+        death_pos = {"radiant": [], "dire": []}
+        for i, pl in enumerate(pls):
+            for xs, ymap in (pl.get("deaths_pos") or {}).items():
+                for ys, c in (ymap or {}).items():
+                    try:
+                        x, y = int(xs), int(ys)
+                    except ValueError:
+                        continue
+                    death_pos["radiant" if i < 5 else "dire"].append({"x": x, "y": y, "c": c})
+
+        r_deaths = sum(p["deaths"] for p in participants.values() if p["slot"] < 5)
+        d_deaths = sum(p["deaths"] for p in participants.values() if p["slot"] >= 5)
+        net_gold = (sum(p["gold_delta"] for p in participants.values() if p["slot"] < 5)
+                    - sum(p["gold_delta"] for p in participants.values() if p["slot"] >= 5))
+        net_xp = (sum(p["xp_delta"] for p in participants.values() if p["slot"] < 5)
+                  - sum(p["xp_delta"] for p in participants.values() if p["slot"] >= 5))
+        winner = _teamfight_winner(r_deaths, d_deaths, net_gold)
+
+        # 疑似先手：全场 ability_uses+item_uses 最高者（启发式，低置信）
+        engager = None
+        eng_best = -1
+        for p in participants.values():
+            act = p["ability_uses"] + p["item_uses"]
+            if act > eng_best:
+                eng_best, engager = act, p["slot"]
+        # 一边倒度评分：0-100
+        kill_diff = d_deaths - r_deaths  # 天辉击杀优势（正=天辉赢）
+        quality = 50 + kill_diff * 6 + max(-20, min(20, net_gold // 300))
+        quality = max(0, min(100, quality))
+
+        def _centroid(lst):
+            if not lst:
+                return None
+            n = sum(d["c"] for d in lst)
+            if n == 0:
+                return None
+            return {"x": round(sum(d["x"] * d["c"] for d in lst) / n, 1),
+                    "y": round(sum(d["y"] * d["c"] for d in lst) / n, 1),
+                    "n": n}
+
+        out.append({
+            "start": tf.get("start"),
+            "end": tf.get("end"),
+            "duration": (tf.get("end") or 0) - (tf.get("start") or 0),
+            "last_death": tf.get("last_death"),
+            "radiant_deaths": r_deaths,
+            "dire_deaths": d_deaths,
+            "winner": winner,
+            "net_gold_delta": net_gold,
+            "net_xp_delta": net_xp,
+            "quality_score": quality,
+            "kill_chain": kill_chain,
+            "participants": [participants[i] for i in sorted(participants)],
+            "suspected_initiator": (
+                {"slot": engager, "hero": slot_display.get(engager), "confidence": "low"}
+                if engager is not None else None),
+            "death_positions": {
+                "radiant_centroid": _centroid(death_pos["radiant"]),
+                "dire_centroid": _centroid(death_pos["dire"]),
+                "radiant_deaths": len(death_pos["radiant"]),
+                "dire_deaths": len(death_pos["dire"]),
+            },
+        })
+    return out
+
+
 def infer_lane(p):
     """由 lane_pos 推断分路。坐标约 64~192，中心对角线为中路。"""
     lp = p.get("lane_pos") or {}
@@ -292,6 +415,10 @@ def main():
             "pings": sum((p.get("pings") or {}).values()),
         })
 
+    # 团战深度分析（基于 raw blob 的 per-player 细节重建）
+    slot_display = {q["slot"]: q["hero_display"] for q in out_players}
+    enriched_tfs = enrich_teamfights(blob, slot_display, npc_to_slot)
+
     # 建筑摧毁时间线
     buildings = []
     for o in blob.get("objectives", []) or []:
@@ -324,7 +451,7 @@ def main():
         "buildings_timeline": buildings,
         "roshan_timeline": roshan_kills,
         "buyback_timeline": buyback_timeline,
-        "teamfights": summary.get("teamfights"),
+        "teamfights": enriched_tfs,
         "players": out_players,
     }
     out_p = REPORTS / f"{args.match}_deep.json"

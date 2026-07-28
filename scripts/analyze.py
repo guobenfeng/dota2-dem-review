@@ -151,10 +151,23 @@ def parse_dem(dem_path: Path) -> dict:
     req.add_header("Content-Type", "application/octet-stream")
     print(f"[parse] POST {dem_path.name} ({len(data)/1024/1024:.1f} MB) → parser …")
     t0 = time.time()
-    with urllib.request.urlopen(req, timeout=600) as r:
-        body = r.read().decode("utf-8", "replace")
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            body = r.read().decode("utf-8", "replace")
+    except urllib.error.URLError as e:
+        raise SystemExit(
+            f"[parse] 无法连接 parser 服务（http://localhost:{PARSER_PORT}）。\n"
+            f"请先启动解析服务：python run_parser.py\n原始错误：{e}")
+    except Exception as e:
+        raise SystemExit(f"[parse] 请求 parser 失败：{e}")
     print(f"[parse] 耗时 {time.time()-t0:.1f}s，返回 {len(body)/1024:.1f} KB")
-    return json.loads(body)
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as e:
+        # parser 返回了非 JSON（如 Java 报错栈），写出前 500 字符便于排查
+        snippet = body[:500].replace("\n", " ")
+        raise SystemExit(f"[parse] parser 返回的不是合法 JSON（可能被 .dem 损坏或 parser 报错）：{e}\n"
+                         f"响应片段：{snippet}")
 
 
 # ---------------------------------------------------------------------------

@@ -71,7 +71,10 @@ def snappy_decompress(data: bytes) -> bytes:
 def _read_varint(buf, pos):
     r = 0
     s = 0
+    n = len(buf)
     while True:
+        if pos >= n:
+            raise ValueError("protobuf 数据截断（.dem 可能损坏）")
         b = buf[pos]
         pos += 1
         r |= (b & 0x7F) << s
@@ -81,10 +84,12 @@ def _read_varint(buf, pos):
 
 
 def pb_fields(buf):
-    """遍历一层 protobuf，yield (field_no, wire_type, value)。"""
+    """遍历一层 protobuf，yield (field_no, wire_type, value)。遇损坏数据抛出 ValueError。"""
     pos = 0
     n = len(buf)
     while pos < n:
+        if pos >= n:
+            break
         key, pos = _read_varint(buf, pos)
         fno, wt = key >> 3, key & 7
         if wt == 0:
@@ -120,9 +125,11 @@ def extract_players(dem_path):
             r = 0
             s = 0
             while True:
-                b = f.read(1)[0]
-                r |= (b & 0x7F) << s
-                if not (b & 0x80):
+                b = f.read(1)
+                if not b:
+                    raise ValueError("dem 解析越界（文件可能损坏或未完整收尾）")
+                r |= (b[0] & 0x7F) << s
+                if not (b[0] & 0x80):
                     return r
                 s += 7
         cmd = rv()
@@ -160,7 +167,13 @@ def main():
     ap.add_argument("--dem", required=True)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
-    players = extract_players(args.dem)
+    try:
+        players = extract_players(args.dem)
+    except Exception as e:
+        print(f"[dem_playerinfo] 提取失败：{e}", file=sys.stderr)
+        sys.exit(1)
+    if not players:
+        print("[dem_playerinfo] 警告：未从录像中提取到任何玩家信息（可能是老版本录像或畸形文件）", file=sys.stderr)
     for pl in players:
         print(f"team={pl['team']} hero={pl['hero']:<38} name={pl['name']}")
     if args.out:

@@ -82,6 +82,10 @@ def match_detail(mid: str):
         detail["gold_t"] = [p.get("gold_t") or [] for p in raw.get("players", [])]
         detail["xp_t"] = [p.get("xp_t") or [] for p in raw.get("players", [])]
         detail["lh_t"] = [p.get("lh_t") or [] for p in raw.get("players", [])]
+    # 团战深度分析（来自 deep.json 的 enriched teamfights）
+    deep = read_json(REPORTS / f"{mid}_deep.json")
+    if deep:
+        detail["teamfights_deep"] = deep.get("teamfights")
     return detail
 
 

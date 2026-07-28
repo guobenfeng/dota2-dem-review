@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib.utils import ROOT as HERE, REPORTS, match_id_of
+from lib.utils import ROOT as HERE, REPORT_DIR as REPORTS, match_id_of
 
 
 def run_script(script: str, *args) -> int:
@@ -36,12 +36,13 @@ def build_index() -> dict:
         mid = f.name.replace("_summary.json", "")
         try:
             s = json.loads(f.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            print(f"[batch] 跳过损坏的索引源 {f.name}：{e}")
             continue
         players = s.get("players", [])
-        radiant_kills = sum(p["kills"] for p in players if p["team"] == "天辉")
-        dire_kills = sum(p["kills"] for p in players if p["team"] == "夜魇")
-        mvp = max(players, key=lambda p: (p["kda"], p["damage"])) if players else None
+        radiant_kills = sum(p.get("kills", 0) for p in players if p.get("team") == "天辉")
+        dire_kills = sum(p.get("kills", 0) for p in players if p.get("team") == "夜魇")
+        mvp = max(players, key=lambda p: (p.get("kda", 0), p.get("damage", 0))) if players else None
         items.append({
             "match_id": mid,
             "winner": s.get("winner"),

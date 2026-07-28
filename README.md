@@ -35,7 +35,15 @@ explore the data through a built-in Web UI.
   points, Roshan & buyback博弈, per-player breakdowns with item-timing grades, and
   prioritized improvements. Authored by the AI per the spec in `SKILL.md`.
 - **Web UI** — a zero-dependency stdlib HTTP server (port 8642) with a dark-themed
-  ECharts single-page dashboard.
+  ECharts single-page dashboard. **ECharts is bundled locally** (`webapp/static/vendor/echarts.min.js`),
+  so the dashboard works fully **offline** with no CDN dependency.
+- **Teamfight depth analysis** — each teamfight now carries a reconstructed kill
+  chain (killer → victim), a suspected initiator (highest first-blood damage), a
+  quality score (net gold/xp swing + K/D ratio), and clustered death positions
+  (centroid + radius). Surfaced both in the JSON and in the Web UI.
+- **Test suite** — `scripts/tests/run.py` (stdlib `unittest`, zero network) covers
+  `lib.utils`, coach grading, lane inference, teamfight enrichment, and the
+  `dem_playerinfo` snappy/protobuf parser. Run `python scripts/tests/run.py`.
 - **Bilingual & offline-friendly** — hero names in English + 中文; Chinese names
   from a static table, English names auto-cached from dotaconstants/OpenDota.
 - **Pure Python standard library** — no `pip install` required.

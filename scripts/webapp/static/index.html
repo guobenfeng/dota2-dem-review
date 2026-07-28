@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dota2 AI 复盘中心</title>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<script src="/vendor/echarts.min.js" onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js'"></script>
 <style>
 :root{
   --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#2d3748;
@@ -176,6 +176,28 @@ async function renderMatch(mid){
         <span>阵亡 ${total}（<span style="color:var(--radiant)">天辉 ${f.radiant_deaths}</span> / <span style="color:var(--dire)">夜魇 ${f.dire_deaths}</span>）</span>
         <div class="tf-bar"><div style="width:${rp}%;background:var(--radiant)"></div><div style="width:${100-rp}%;background:var(--dire)"></div></div>
         <span style="color:var(--muted)">最高伤害 ${f.top_damage[0]}（${f.top_damage[1].toLocaleString()}）</span></div>`;
+    }
+    h += `</div>`;
+  }
+  // 团战深度分析（来自 deep.json）
+  if(d.teamfights_deep && d.teamfights_deep.length){
+    h += `<div class="card"><h2>🔬 团战深度分析</h2>`;
+    for(const f of d.teamfights_deep){
+      const total = f.radiant_deaths + f.dire_deaths;
+      const win = f.winner==='radiant'?'天辉':(f.winner==='dire'?'夜魇':'平');
+      const wcls = f.winner==='radiant'?'radiant':(f.winner==='dire'?'dire':'');
+      const chain = (f.kill_chain||[]).slice(0,8).map(k=>`${k.killer}→${k.victim}${k.count>1?'×'+k.count:''}`).join('、') || '—';
+      const init = f.suspected_initiator ? `${f.suspected_initiator.hero}（活跃度最高·低置信）` : '—';
+      const dp = f.death_positions || {};
+      h += `<div class="tf-row" style="flex-wrap:wrap">
+        <span class="tf-time">${fmtMin(f.start)}</span>
+        <span class="badge ${wcls}">${win}胜</span>
+        <span>阵亡 ${total}（天辉 ${f.radiant_deaths}/夜魇 ${f.dire_deaths}）</span>
+        <span style="color:var(--muted)">质量分 ${f.quality_score}</span>
+        <span style="color:var(--muted)">先手候选：${init}</span>
+        <div style="width:100%;margin-top:6px;color:var(--muted);font-size:12px">击杀链：${chain}</div>
+        <div style="width:100%;color:var(--muted);font-size:12px">死亡位置质心：天辉 ${dp.radiant_centroid?`(${dp.radiant_centroid.x},${dp.radiant_centroid.y})`:'—'} / 夜魇 ${dp.dire_centroid?`(${dp.dire_centroid.x},${dp.dire_centroid.y})`:'—'}</div>
+      </div>`;
     }
     h += `</div>`;
   }

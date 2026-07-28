@@ -361,7 +361,11 @@ def main():
     if not summary_file.exists():
         print(f"[coach] 找不到 {summary_file}，请先运行 analyze.py")
         return 1
-    s = json.loads(summary_file.read_text(encoding="utf-8"))
+    try:
+        s = json.loads(summary_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"[coach] {summary_file.name} 不是合法 JSON（可能上次解析中断）：{e}")
+        return 1
 
     # 装备时效基准对比需要 deep.json 里的 key_items（含购买时间）。
     # coach 默认只读 summary.json，后者不含该字段——这里把 deep 的关键装备
@@ -387,10 +391,14 @@ def main():
         r["engine"] = "rule+llm"
         r["llm_recap"] = llm_text
 
-    (REPORTS / f"{args.match}_coach.json").write_text(
-        json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
-    (REPORTS / f"{args.match}_coach.md").write_text(
-        render_md(r, llm_text), encoding="utf-8")
+    try:
+        (REPORTS / f"{args.match}_coach.json").write_text(
+            json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
+        (REPORTS / f"{args.match}_coach.md").write_text(
+            render_md(r, llm_text), encoding="utf-8")
+    except OSError as e:
+        print(f"[coach] 写入教练报告失败（磁盘/权限问题）：{e}")
+        return 1
     print(f"[coach] 教练报告已生成：{args.match}_coach.json / {args.match}_coach.md")
     return 0
 
