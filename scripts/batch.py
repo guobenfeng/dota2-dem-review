@@ -18,13 +18,8 @@ import sys
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-REPORTS = HERE / "reports"
-
-
-def match_id_of(dem: Path) -> str:
-    m = re.search(r"(\d{6,})", dem.stem)
-    return m.group(1) if m else dem.stem
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.utils import ROOT as HERE, REPORTS, match_id_of
 
 
 def run_script(script: str, *args) -> int:
@@ -113,6 +108,10 @@ def main():
                     fail += 1
                     continue
             if not args.no_coach:
+                # 先生成深度素材（装备时间线/分路/买活等），coach 的装备时效基准依赖它
+                deep_file = REPORTS / f"{mid}_deep.json"
+                if not deep_file.exists() or args.force:
+                    run_script("deep_extract.py", "--match", mid)
                 coach_file = REPORTS / f"{mid}_coach.json"
                 if not coach_file.exists() or args.force:
                     run_script("coach.py", "--match", mid)

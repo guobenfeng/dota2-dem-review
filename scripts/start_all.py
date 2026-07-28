@@ -7,7 +7,8 @@
   3. 全部就绪后自动打开浏览器 http://localhost:8642
 
 幂等：重复运行不会重复起服务（先探测健康检查，活着就跳过）。
-Java 运行时自动探测（JAVA_HOME / JDK_HOME / PATH）；parser 默认 ../parser。
+Java 运行时自动探测（JAVA_HOME / JDK_HOME / PATH）；parser 默认 ../odota-parser。
+用法：python start_all.py [--no-browser]
 """
 import os
 import shutil
@@ -18,7 +19,16 @@ import urllib.request
 import webbrowser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PARSER = os.environ.get("DOTA2_PARSER_DIR") or os.path.join(os.path.dirname(HERE), "parser")
+# parser 目录：优先 env 变量，其次 ../odota-parser，最后 ../parser
+PARSER = os.environ.get("DOTA2_PARSER_DIR")
+if not PARSER:
+    for cand in [os.path.join(os.path.dirname(HERE), "odota-parser"),
+                 os.path.join(os.path.dirname(HERE), "parser")]:
+        if os.path.exists(cand):
+            PARSER = cand
+            break
+if not PARSER:
+    PARSER = os.path.join(os.path.dirname(HERE), "odota-parser")
 JAR = os.path.join(PARSER, "target", "stats-0.1.0.jar")
 PARSER_PORT = 5600
 WEB_PORT = 8642
@@ -28,11 +38,8 @@ def find_java():
     for envvar in ("JAVA_HOME", "JDK_HOME"):
         v = os.environ.get(envvar)
         if v and os.path.exists(os.path.join(v, "bin", "java")):
-            return v, os.path.join(v, "bin", "java")
-    j = shutil.which("java")
-    if j:
-        return os.path.dirname(os.path.dirname(j)), j
-    return None, None
+            return os.path.join(v, "bin", "java")
+    return shutil.which("java")
 
 
 def detached_kwargs(cwd, env, logf):
@@ -68,14 +75,14 @@ def start_parser():
         print(f"  [OK] 解析服务已在运行（端口 {PARSER_PORT}），跳过")
         return True
     if not os.path.exists(JAR):
-        print(f"  [!!] 缺少构建产物 {JAR}\n       请先运行: python build_parser.py")
+        print(f"  [!!] 缺少构建产物 {JAR}\n       请先安装 JRE 21+ 并运行: python build_parser.py")
         return False
-    java_home, java = find_java()
+    java = find_java()
     if not java:
         print("  [!!] 未找到 Java 运行时，请安装 JRE 21+ 并设置 JAVA_HOME。")
         return False
     env = os.environ.copy()
-    env["JAVA_HOME"] = java_home
+    env["JAVA_HOME"] = os.path.dirname(os.path.dirname(java))
     logf = open(os.path.join(HERE, "parser.log"), "w", encoding="utf-8", buffering=1)
     proc = subprocess.Popen(
         [java, "-jar", JAR, str(PARSER_PORT)],

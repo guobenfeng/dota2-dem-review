@@ -17,11 +17,22 @@ import json
 import re
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-REPORTS = HERE / "reports"
-HERO_CACHE = HERE / "heroes.json"
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.utils import (
+    ROOT as HERE, REPORT_DIR, HERO_CACHE,
+    RADIANT, DIRE, fmt_min, is_radiant, player_hero_token,
+    load_heroes, load_heroes_cn, hero_name,
+)
 
+# deep_extract 内部用英文阵营名（保持输出 JSON 兼容）
 RADIANT, DIRE = "radiant", "dire"
+REPORTS = REPORT_DIR
+
+
+def team_of_slot(idx):
+    """slot 0-4 = radiant，5-9 = dire。"""
+    return RADIANT if is_radiant(idx) else DIRE
 
 GOLD_REASONS = {
     "0": "其他", "1": "死亡惩罚", "2": "买活", "5": "逃跑惩罚", "6": "卖装备",
@@ -55,53 +66,19 @@ KEY_ITEMS = {
 
 
 def _infer_winner(blob: dict):
-    """从 raw blob 推断胜者（当 summary.json 不可用时）。"""
+    """从 raw blob 推断胜者（当 summary.json 不可用时）。返回 English radiant/dire。"""
     # 扫描建筑击杀中的遗迹
     for o in blob.get("objectives", []) or []:
         if o.get("type") == "building_kill":
             key = o.get("key") or ""
             if "goodguys_fort" in key:
-                return "夜魇"  # 夜魇推掉天辉遗迹
+                return DIRE  # 夜魇推掉天辉遗迹
             elif "badguys_fort" in key:
-                return "天辉"
+                return RADIANT
     # 回退用最终经济差符号
     adv = blob.get("radiant_gold_adv") or []
     if adv:
-        return "天辉" if adv[-1] > 0 else "夜魇"
-    return None
-
-
-def fmt_min(sec):
-    if sec is None:
-        return "?"
-    sign = "-" if sec < 0 else ""
-    sec = abs(int(sec))
-    return f"{sign}{sec // 60}:{sec % 60:02d}"
-
-
-def team_of_slot(idx):
-    return RADIANT if idx < 5 else DIRE
-
-
-def load_heroes():
-    if HERO_CACHE.exists():
-        return json.loads(HERO_CACHE.read_text(encoding="utf-8"))
-    return {}
-
-
-def player_hero_token(p, hero_tokens):
-    au = p.get("ability_uses") or {}
-    counts = {}
-    for k, v in au.items():
-        best = None
-        for tok in hero_tokens:
-            if k.startswith(tok + "_") or k == tok:
-                if best is None or len(tok) > len(best):
-                    best = tok
-        if best:
-            counts[best] = counts.get(best, 0) + v
-    if counts:
-        return max(counts, key=counts.get)
+        return RADIANT if adv[-1] > 0 else DIRE
     return None
 
 

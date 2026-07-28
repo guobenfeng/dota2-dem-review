@@ -1,5 +1,6 @@
 {
   "watch_dirs": [
-    "/path/to/your/dota2/replays"
-  ]
+    "_demos/"
+  ],
+  "_comment": "把你要监控的 .dem 目录路径填到 watch_dirs 数组里（支持相对路径与绝对路径）。默认 _demos/ 是 dem-analyzer 下的子目录，把录像放进去即可。"
 }

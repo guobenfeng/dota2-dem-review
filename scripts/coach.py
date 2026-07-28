@@ -18,8 +18,12 @@
 import argparse
 import json
 import os
+import sys
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.utils import fmt_min
 
 HERE = Path(__file__).resolve().parent
 REPORTS = HERE / "reports"
@@ -28,6 +32,9 @@ RADIANT, DIRE = "天辉", "夜魇"
 # 关键装备时效基准（核心位常见出装路线的黄金窗口期，以秒计）
 ITEM_BENCHMARKS = {
     "blink":           720,   # 跳刀 12 分钟
+    "swift_blink":     720,   # 升级跳刀（同基准）
+    "overwhelming_blink": 720,
+    "arcane_blink":   720,
     "battle_fury":     840,   # 狂战 14 分钟（含草鞋）
     "bfury":           840,   # 狂战（别名）
     "radiance":        1020,  # 辉耀 17 分钟
@@ -48,26 +55,32 @@ ITEM_BENCHMARKS = {
 
 
 def check_item_timing(p, duration_min):
-    """对比关键装备购买时间与元游戏基准，生成建议。返回 (highlights, advices)。"""
+    """对比关键装备购买时间与元游戏基准，生成建议。
+
+    基准按比赛时长缩放（scale = clamp(duration/30, 1.0, 2.0)），
+    避免超长局（如 87 分钟）全员误报“过晚”；返回 (highlights, advices,
+    on_time, slight_late, very_late) 供评分做上限约束，防止装备罚金把高分核心砸到 D。
+    """
     hl, ad = [], []
+    on_time = slight = very = 0
     key_items = p.get("key_items") or []
+    scale = min(max(1.0, (duration_min or 0) / 30.0), 2.0)
     for ki in key_items:
         item = ki.get("item") or ki.get("name") or ""
         purchase_time = ki.get("time", 0)
         if not item or item not in ITEM_BENCHMARKS:
             continue
-        benchmark = ITEM_BENCHMARKS[item]
+        benchmark = ITEM_BENCHMARKS[item] * scale
         if purchase_time <= benchmark:
-            hl.append(f"{item} {fmt_min(purchase_time)} 准时（基准{fmt_min(benchmark)}）")
+            hl.append(f"{item} {fmt_min(purchase_time)} 准时（基准{fmt_min(int(benchmark))}）")
+            on_time += 1
         elif purchase_time > benchmark * 1.5:
-            ad.append(f"{item} {fmt_min(purchase_time)} 过晚（基准{fmt_min(benchmark)}）——节奏严重落后，需检视打钱路线和团战收益")
-        elif purchase_time > benchmark:
-            ad.append(f"{item} {fmt_min(purchase_time)} 稍晚（基准{fmt_min(benchmark)}）——可优化前期发育节奏")
-    return hl, ad
-
-
-def fmt_min(sec):
-    return f"{int(sec)//60}:{int(sec)%60:02d}"
+            ad.append(f"{item} {fmt_min(purchase_time)} 过晚（基准{fmt_min(int(benchmark))}）——节奏落后，检视打钱路线与团战收益")
+            very += 1
+        else:
+            ad.append(f"{item} {fmt_min(purchase_time)} 稍晚（基准{fmt_min(int(benchmark))}）——可优化前期发育节奏")
+            slight += 1
+    return hl, ad, on_time, slight, very
 
 
 # ---------------------------------------------------------------- 规则引擎
@@ -138,10 +151,12 @@ def grade_player(p, duration_min, team_won):
         highlights.append(f"拆塔 {p['towers']} 座，推进转化出色")
         score += 5
 
-    # 物品时效基准（对标元游戏黄金窗口）
-    ih, ia = check_item_timing(p, duration_min)
+    # 物品时效基准（对标元游戏黄金窗口，按比赛时长缩放并对罚金设上限）
+    ih, ia, on_time, slight, very = check_item_timing(p, duration_min)
     highlights += ih; advices += ia
-    score += len(ih) * 3 - len(ia) * 4
+    item_score = on_time * 3 - slight * 2 - very * 4
+    item_score = max(-15, min(12, item_score))  # 防止装备罚金主导总分、造成评分倒挂
+    score += item_score
 
     if team_won:
         score += 5
@@ -248,6 +263,23 @@ def rule_coach(s):
 
 # ---------------------------------------------------------------- LLM 增强
 
+def build_fact_block(summary):
+    """从结构化数据生成带显式胜方的『团战事实』，作为硬约束喂给 LLM，防止方向反转。"""
+    lines = []
+    winner = summary.get("winner")
+    if winner:
+        lines.append(f"比赛最终胜方：{winner}（严禁反转此结论）")
+    tfs = summary.get("teamfights") or []
+    if tfs:
+        lines.append("团战事实（每场已明确标注胜方，严禁反转或臆造）：")
+        for i, f in enumerate(sorted(tfs, key=lambda x: x.get("start", 0)), 1):
+            rd = f.get("radiant_deaths", 0)
+            dd = f.get("dire_deaths", 0)
+            win = "天辉胜" if rd < dd else ("夜魇胜" if dd < rd else "平局")
+            lines.append(f"  {i}. 第 {fmt_min(f.get('start', 0))} 分钟：{win}（天辉阵亡 {rd} / 夜魇阵亡 {dd}）")
+    return "\n".join(lines)
+
+
 def llm_coach(summary, rule_result):
     """可选：调用 OpenAI 兼容 API 生成自然语言深度复盘。失败返回 None。"""
     api_key = os.environ.get("LLM_API_KEY")
@@ -255,10 +287,14 @@ def llm_coach(summary, rule_result):
         return None
     base = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+    facts = build_fact_block(summary)
     prompt = (
-        "你是一名职业 Dota 2 教练。基于以下比赛结构化数据（JSON），写一篇 500 字左右的中文复盘：\n"
+        "你是一名职业 Dota 2 教练。基于以下【团战事实】与比赛结构化数据（JSON），"
+        "写一篇 500 字左右的中文复盘：\n"
         "1) 胜负手是什么 2) 双方最关键的 2-3 个转折点 3) 给表现最差的两名玩家各一条具体可执行的改进建议。\n"
-        "语气专业、直接，不要客套。\n\n比赛数据：\n" + json.dumps(summary, ensure_ascii=False)
+        "严格要求：所有团战胜方必须与【团战事实】完全一致，严禁反转、混淆天辉/夜魇或臆造数据；"
+        "语气专业、直接，不要客套。\n\n"
+        + facts + "\n\n比赛数据：\n" + json.dumps(summary, ensure_ascii=False)
     )
     body = json.dumps({
         "model": model,

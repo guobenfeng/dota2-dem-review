@@ -16,7 +16,7 @@ Dota 2 .dem 复盘分析器 —— 基于 odota/parser 的实战项目
 用法
 ====
   # 最简：假设 parser 已在 5600 端口运行
-  python analyze.py --dem /path/to/match.dem
+  python analyze.py --dem ./replays/match.dem
 
   # 一键：自动构建并启动 parser（需先下载好 JDK / Maven 到 toolchain 目录）
   python analyze.py --dem <文件.dem> --start-parser --parser-dir <odota-parser路径>
@@ -38,87 +38,36 @@ import time
 import urllib.request
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# 0. 路径配置
-# ---------------------------------------------------------------------------
-HERE = Path(__file__).resolve().parent
-REPORT_DIR = HERE / "reports"
-HERO_CACHE = HERE / "heroes.json"
-HERO_CN = HERE / "heroes_cn.json"   # token -> 中文名（静态表，离线可用）
+# 共享工具模块
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.utils import (
+    ROOT as HERE, REPORT_DIR, HERO_CACHE, HERO_CN,
+    RADIANT, DIRE,
+    fmt_min, team_of_slot, player_hero_token,
+    load_heroes, load_heroes_cn, hero_name,
+    find_java, locate_parser_dir, match_id_of,
+)
+
+# 兼容旧引用
 PARSER_PORT = 5600
 
 
 # ---------------------------------------------------------------------------
-# 1. 工具链定位（JDK / Maven）
+# 1. 工具链定位（JDK / Maven）— 使用 lib.utils.find_java
 # ---------------------------------------------------------------------------
-def find_in_dir(base: Path, sub_bin: str):
-    """在 base 目录下递归找一个可执行文件（相对路径 sub_bin）。"""
-    if not base.exists():
-        return None
-    for p in base.rglob(sub_bin):
-        if p.is_file():
-            return p
-    return None
-
-
 def locate_toolchain(toolchain: Path):
     """
     定位 JAVA_HOME 与 MVN。
     依次搜索：--toolchain 参数 > 环境变量 DOTA2_TOOLCHAIN >
-    <脚本目录>/toolchain > <脚本上级>/toolchain > 系统 PATH。
+    <项目>/toolchain > <项目上级>/toolchain > 系统 PATH。
     """
+    from lib.utils import find_java, find_mvn as _find_mvn
+    java = find_java()
     java_home = None
-    mvn = None
-
-    candidates = []
-    if toolchain:
-        candidates.append(Path(toolchain))
-    if "DOTA2_TOOLCHAIN" in os.environ:
-        candidates.append(Path(os.environ["DOTA2_TOOLCHAIN"]))
-    candidates.append(HERE / "toolchain")
-    candidates.append(HERE.parent / "toolchain")
-
-    base = None
-    for c in candidates:
-        if c and c.exists():
-            base = c
-            break
-
-    jdk = find_in_dir(base, "bin/java.exe") or find_in_dir(base, "bin/java") if base else None
-    if jdk:
-        java_home = jdk.parent.parent
-        java = jdk
-    else:
-        java = shutil.which("java")
-
-    mvn_bin = (find_in_dir(base, "bin/mvn.cmd") or find_in_dir(base, "bin/mvn")) if base else None
-    if mvn_bin:
-        mvn = mvn_bin
-    else:
-        mvn = shutil.which("mvn.cmd") or shutil.which("mvn")
-
-    if java and not java_home:
-        java_home = Path(os.environ.get("JAVA_HOME", "")) or java.parent.parent
-    return java_home, java, mvn
-
-
-def locate_parser_dir(parser_dir):
-    """定位 odota/parser 项目目录（默认搜索常见位置，跨平台）。"""
-    if parser_dir:
-        return Path(parser_dir).resolve()
-    env = os.environ.get("DOTA2_PARSER_DIR")
-    candidates = []
-    if env:
-        candidates.append(Path(env))
-    candidates += [
-        HERE.parent / "parser",
-        HERE / "parser",
-        HERE / "odota-parser",
-    ]
-    for c in candidates:
-        if c and c.exists():
-            return c.resolve()
-    return None
+    if java:
+        java_home = Path(java).parent.parent
+    mvn = _find_mvn()
+    return java_home, (Path(java) if java else None), (Path(mvn) if mvn else None)
 
 
 # ---------------------------------------------------------------------------
@@ -145,9 +94,10 @@ def build_parser(parser_dir: Path, java_home, mvn) -> Path:
 
 def start_parser_service(jar: Path, java) -> subprocess.Popen:
     print(f"[parser] 启动服务：java -jar {jar.name} {PARSER_PORT}")
+    logf = open(HERE / "parser.log", "w", encoding="utf-8", buffering=1)
     proc = subprocess.Popen(
         [str(java), "-jar", str(jar), str(PARSER_PORT)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdout=logf, stderr=subprocess.STDOUT,
     )
     # 轮询健康检查
     for _ in range(60):
@@ -208,97 +158,8 @@ def parse_dem(dem_path: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 4. 英雄名映射
+# 4. 玩家昵称提取
 # ---------------------------------------------------------------------------
-def load_heroes():
-    """返回 {hero_id(str): 名称, hero_token: 名称} 的双键映射，便于按 id 或 by-token 查名。"""
-    if HERO_CACHE.exists():
-        try:
-            return json.loads(HERO_CACHE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    sources = [
-        "https://raw.githubusercontent.com/odota/dotaconstants/master/build/heroes.json",
-        "https://api.opendota.com/api/heroes",
-    ]
-    for url in sources:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                arr = json.loads(r.read().decode("utf-8"))
-            # dotaconstants 返回 dict {id: hero}，OpenDota 返回 list [hero]
-            items = arr.values() if isinstance(arr, dict) else arr
-            mapping = {}
-            for h in items:
-                hid = str(h.get("id"))
-                name = h.get("localized_name") or h.get("name")
-                token = (h.get("name") or "").replace("npc_dota_hero_", "")
-                if hid:
-                    mapping[hid] = name
-                if token:
-                    mapping[token] = name
-            HERO_CACHE.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(f"[heroes] 已缓存 {len(mapping)//2} 个英雄名 → {HERO_CACHE.name}")
-            return mapping
-        except Exception as e:
-            print(f"[heroes] 来源 {url} 失败：{e}")
-    print("[heroes] 全部来源失败（报告将只显示 hero token）")
-    return {}
-
-
-def player_hero_token(p, heroes):
-    """从 ability_uses 的技能名反推该玩家使用的英雄 token。
-
-    odota/parser 的 Blob 不导出 player.hero_id（源码中被注释），
-    但 ability_uses 的键以英雄 token 为前缀（如 ogre_magi_bloodlust → ogre_magi）。
-    英雄 token 本身可能含下划线（ogre_magi / spirit_breaker / phantom_assassin），
-    因此对每个技能键在已知英雄 token 集合中做前缀匹配。
-    """
-    au = p.get("ability_uses") or {}
-    tokens = [k for k in heroes if not k.isdigit()]  # 缓存里的非数字键即 hero token
-    best, bestc = None, -1
-    for k, v in au.items():
-        matched = None
-        for t in tokens:
-            if k == t or k.startswith(t + "_"):
-                matched = t
-                break
-        if matched is None:
-            continue
-        if v > bestc:
-            bestc, best = v, matched
-    return best
-
-
-def load_heroes_cn():
-    """加载 token -> 中文名 静态映射（heroes_cn.json，离线可用）。"""
-    try:
-        return json.loads(HERO_CN.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-_HEROES_CN = None
-
-
-def hero_name(heroes, hid):
-    """返回「中文名（English Name）」双语英雄名；缺中文时只显示英文。"""
-    global _HEROES_CN
-    if hid is None:
-        return "未知"
-    if _HEROES_CN is None:
-        _HEROES_CN = load_heroes_cn()
-    en = heroes.get(str(hid), f"英雄#{hid}")
-    # hid 可能是 token（如 ogre_magi）或数字 id；数字 id 需反查 token
-    token = str(hid)
-    if token.isdigit():
-        # heroes 里 token 键与 id 键映射到同一英文名，反查 token
-        for k, v in heroes.items():
-            if not k.isdigit() and v == en:
-                token = k
-                break
-    cn = _HEROES_CN.get(token)
-    return f"{cn}（{en}）" if cn and cn != en else en
 
 
 def load_player_names(dem_path=None, match_id=None):
@@ -344,12 +205,6 @@ def load_player_names(dem_path=None, match_id=None):
 # ---------------------------------------------------------------------------
 # 5. 指标计算
 # ---------------------------------------------------------------------------
-RADIANT = "天辉"
-DIRE = "夜魇"
-
-
-def team_of_slot(idx):
-    return RADIANT if idx < 5 else DIRE
 
 
 def compute(blob: dict, match_id, heroes: dict, player_names: dict = None) -> dict:
@@ -519,13 +374,6 @@ def compute(blob: dict, match_id, heroes: dict, player_names: dict = None) -> di
 # ---------------------------------------------------------------------------
 # 6. 报告渲染
 # ---------------------------------------------------------------------------
-def fmt_min(s):
-    if s is None:
-        return "—"
-    m = s // 60
-    return f"{m}:{s % 60:02d}"
-
-
 def render_report(summary: dict, match_id, heroes: dict) -> str:
     w = summary["winner"] or "未知"
     L = []
@@ -631,8 +479,7 @@ def main():
         sys.exit(1)
 
     # match_id 取自文件名（如 8701850772.dem -> 8701850772）
-    m = re.search(r"(\d{6,})", dem.stem)
-    match_id = m.group(1) if m else dem.stem
+    match_id = match_id_of(dem)
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
